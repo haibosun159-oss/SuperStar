@@ -4,6 +4,7 @@ import configparser
 import enum
 import sys
 import threading
+import re
 import time
 import traceback
 from concurrent.futures.thread import ThreadPoolExecutor
@@ -27,6 +28,8 @@ class ChapterResult(enum.Enum):
     ERROR=1,
     NOT_OPEN=2,
     PENDING=3
+    CHAPTER_RELOAD_DELAY = 8
+    MAX_NOT_OPEN_RETRY = 3
 
 
 def log_error(func):
@@ -428,45 +431,90 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
         pass
 
     # TODO: 个别章节很恶心，多到5个点，可以并行处理，将来会让不同课程不同章节的所有任务点共享一个队列，从而实现全局并行
-    job_results:list[StudyResult]=[]
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for result in executor.map(lambda job: process_job(chaoxing, course, job, job_info, speed), jobs):
-            job_results.append(result)
-    
-    for result in job_results:
-        if result.is_failure():
-            return ChapterResult.ERROR
+    for job in jobs:
+    result = process_job(chaoxing, course, job, job_info, speed)
+    if result.is_failure():
+        return ChapterResult.ERROR
 
     return ChapterResult.SUCCESS
 
 
 
-def process_course(chaoxing: Chaoxing, course:dict[str, Any], config: dict):
-    """处理单个课程"""
-    logger.info(f"开始学习课程: {course['title']}")
-    
-    # 获取当前课程的所有章节
-    point_list = chaoxing.get_course_point(
-        course["courseId"], course["clazzId"], course["cpi"]
-    )
+def chapter_sort_key(index_and_point):
+    index, point = index_and_point
+    title = str(point.get("title", ""))
+    match = re.match(r"\s*(\d+(?:\.\d+)*)", title)
+    if not match:
+        return ([999999], index)
 
-    # 为了支持课程任务回滚, 采用下标方式遍历任务点
+    nums = [int(item) for item in match.group(1).split(".")]
+    return (nums, index)
+
+
+def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict) -> bool:
+    """按章节顺序处理课程。遇到未开放章节就停止本轮，等待下次定时继续。"""
+    logger.info(f"开始学习课程: {course['title']}")
 
     _old_format_sizeof = tqdm.format_sizeof
     tqdm.format_sizeof = format_time
     tqdm.set_lock(RLock())
 
-    tasks=[]
+    not_open_retry = 0
 
-    for i, point in enumerate(point_list["points"]):
-        task = ChapterTask(point=point, index=i)
-        tasks.append(task)
-    p = JobProcessor(chaoxing, course, tasks, config)
-    p.run()
+    try:
+        while True:
+            point_list = chaoxing.get_course_point(
+                course["courseId"], course["clazzId"], course["cpi"]
+            )
 
+            points = point_list.get("points", [])
+            points = [
+                point
+                for _, point in sorted(enumerate(points), key=chapter_sort_key)
+            ]
 
-    tqdm.format_sizeof = _old_format_sizeof
+            next_point = None
+            for point in points:
+                if not point.get("has_finished", False):
+                    next_point = point
+                    break
 
+            if next_point is None:
+                logger.info(f"课程：{course['title']} 已完成所有当前可学习章节")
+                return True
+
+            result = process_chapter(chaoxing, course, next_point, config["speed"])
+
+            if result == ChapterResult.SUCCESS:
+                not_open_retry = 0
+                logger.info("章节完成，等待平台刷新下一章节状态...")
+                time.sleep(CHAPTER_RELOAD_DELAY)
+                continue
+
+            if result == ChapterResult.NOT_OPEN:
+                not_open_retry += 1
+
+                if not_open_retry >= MAX_NOT_OPEN_RETRY:
+                    logger.warning(
+                        "章节仍未开放: {}。本轮停止，等待下次定时任务继续。",
+                        next_point["title"],
+                    )
+                    return False
+
+                logger.info(
+                    "章节暂未开放: {}，等待刷新后重试 ({}/{})",
+                    next_point["title"],
+                    not_open_retry,
+                    MAX_NOT_OPEN_RETRY,
+                )
+                time.sleep(CHAPTER_RELOAD_DELAY)
+                continue
+
+            logger.error("章节处理失败: {}，本轮停止", next_point["title"])
+            return False
+
+    finally:
+        tqdm.format_sizeof = _old_format_sizeof
 def filter_courses(all_course, course_list):
     """过滤要学习的课程"""
     if not course_list:
@@ -544,12 +592,21 @@ def main():
         course_task = filter_courses(all_course, common_config.get("course_list"))
         
         # 开始学习
-        logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
-        for course in course_task:
-            process_course(chaoxing, course, common_config)
-        
-        logger.info("所有课程学习任务已完成")
-        notification.send("chaoxing : 所有课程学习任务已完成")
+        # 开始学习
+logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
+
+all_done = True
+for course in course_task:
+    course_done = process_course(chaoxing, course, common_config)
+    if not course_done:
+        all_done = False
+
+if all_done:
+    logger.info("所有课程学习任务已完成")
+    notification.send("chaoxing : 所有课程学习任务已完成")
+else:
+    logger.info("本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
+    notification.send("chaoxing : 本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
         
     except SystemExit as e:
         if e.code != 0:

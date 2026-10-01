@@ -432,7 +432,7 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
 
     # TODO: 个别章节很恶心，多到5个点，可以并行处理，将来会让不同课程不同章节的所有任务点共享一个队列，从而实现全局并行
     for job in jobs:
-    result = process_job(chaoxing, course, job, job_info, speed)
+        result = process_job(chaoxing, course, job, job_info, speed)
     if result.is_failure():
         return ChapterResult.ERROR
 

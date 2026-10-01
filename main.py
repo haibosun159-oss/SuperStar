@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import argparse
 import configparser
@@ -28,8 +29,10 @@ class ChapterResult(enum.Enum):
     ERROR=1,
     NOT_OPEN=2,
     PENDING=3
-    CHAPTER_RELOAD_DELAY = 8
-    MAX_NOT_OPEN_RETRY = 3
+
+
+CHAPTER_RELOAD_DELAY = 8
+MAX_NOT_OPEN_RETRY = 3
 
 
 def log_error(func):
@@ -82,7 +85,7 @@ def parse_args():
         help="启用调试模式, 输出DEBUG级别日志",
     )
     parser.add_argument(
-        "-a", "--notopen-action", type=str, default="retry", 
+        "-a", "--notopen-action", type=str, default="retry",
         choices=["retry", "ask", "continue"],
         help="遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续"
     )
@@ -101,11 +104,11 @@ def load_config_from_file(config_path):
     """从配置文件加载设置"""
     config = configparser.ConfigParser()
     config.read(config_path, encoding="utf8")
-    
+
     common_config: dict[str, Any] = {}
     tiku_config: dict[str, Any] = {}
     notification_config: dict[str, Any] = {}
-    
+
     # 检查并读取common节
     if config.has_section("common"):
         common_config = dict(config.items("common"))
@@ -140,7 +143,7 @@ def load_config_from_file(config_path):
     # 检查并读取notification节
     if config.has_section("notification"):
         notification_config = dict(config.items("notification"))
-    
+
     return common_config, tiku_config, notification_config
 
 
@@ -178,22 +181,22 @@ def init_chaoxing(common_config, tiku_config):
     username = common_config.get("username", "")
     password = common_config.get("password", "")
     use_cookies = common_config.get("use_cookies", False)
-    
+
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
         username = input("请输入你的手机号, 按回车确认\n手机号:")
         password = input("请输入你的密码, 按回车确认\n密码:")
-    
+
     account = Account(username, password)
-    
+
     # 设置题库
     tiku = Tiku()
     tiku.config_set(tiku_config)  # 载入配置
     tiku = tiku.get_tiku_from_config()  # 载入题库
     tiku.init_tiku()  # 初始化题库
-    
+
     # 获取查询延迟设置
-    
+
     # 检查大模型连接（如果使用的是大模型题库）
     # 根据配置文件中的 provider 判断是否为大模型题库
     provider = tiku_config.get('provider', '')
@@ -211,10 +214,10 @@ def init_chaoxing(common_config, tiku_config):
                 logger.info('用户选择继续运行...')
 
     query_delay = tiku_config.get("delay", 0)
-    
+
     # 实例化超星API
     chaoxing = Chaoxing(account=account, tiku=tiku, query_delay=query_delay)
-    
+
     return chaoxing
 
 def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float) -> StudyResult:
@@ -257,14 +260,14 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
                 "clazzId": course.get("clazzId"),
                 "knowledgeid": job_info.get("knowledgeid")
             }
-            
+
             # 创建直播对象
             live = Live(
                 attachment=job,
                 defaults=defaults,
                 course_id=course.get("courseId")
             )
-            
+
             # 启动直播处理线程
             thread = threading.Thread(
                 target=LiveProcessor.run_live,
@@ -295,7 +298,7 @@ class JobProcessor:
     def __init__(self, chaoxing: Chaoxing, course: dict[str, Any], tasks: list[ChapterTask], config: dict[str, Any]):
         if "jobs" not in config or not config["jobs"]:
             config["jobs"] = 4
-        
+
         self.chaoxing = chaoxing
         self.course = course
         self.speed = config["speed"]
@@ -414,10 +417,10 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
     if point["has_finished"]:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
         return ChapterResult.SUCCESS
-    
+
     # 随机等待，避免请求过快
     chaoxing.rate_limiter.limit_rate(random_time=True,random_min=0, random_max=0.2)
-    
+
     # 获取当前章节的所有任务点
     job_info = None
     jobs, job_info = chaoxing.get_job_list(course, point)
@@ -433,8 +436,8 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
     # TODO: 个别章节很恶心，多到5个点，可以并行处理，将来会让不同课程不同章节的所有任务点共享一个队列，从而实现全局并行
     for job in jobs:
         result = process_job(chaoxing, course, job, job_info, speed)
-    if result.is_failure():
-        return ChapterResult.ERROR
+        if result.is_failure():
+            return ChapterResult.ERROR
 
     return ChapterResult.SUCCESS
 
@@ -515,6 +518,8 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict) -> 
 
     finally:
         tqdm.format_sizeof = _old_format_sizeof
+
+
 def filter_courses(all_course, course_list):
     """过滤要学习的课程"""
     if not course_list:
@@ -541,10 +546,10 @@ def filter_courses(all_course, course_list):
         if course["courseId"] in course_list and course["courseId"] not in course_ids:
             course_task.append(course)
             course_ids.append(course["courseId"])
-    
+
     if not course_task:
         raise InputFormatError(f"未找到指定课程ID: {', '.join(course_list)}")
-    
+
     return course_task
 
 
@@ -562,52 +567,52 @@ def format_time(num, suffix='', divisor=''):
 
 def main():
     """主程序入口"""
+    notification = None
     try:
         # 初始化配置
         common_config, tiku_config, notification_config = init_config()
         configure_console_logger("DEBUG" if common_config.get("verbose", False) else "INFO")
-        
+
         # 强制播放按照配置文件调节
         common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
-        
+
         # 初始化超星实例
         chaoxing = init_chaoxing(common_config, tiku_config)
-        
+
         # 设置外部通知
         notification = Notification()
         notification.config_set(notification_config)
         notification = notification.get_notification_from_config()
         notification.init_notification()
-        
+
         # 检查当前登录状态
         _login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
         if not _login_state["status"]:
             raise LoginError(_login_state["msg"])
-        
+
         # 获取所有的课程列表
         all_course = chaoxing.get_course_list()
-        
+
         # 过滤要学习的课程
         course_task = filter_courses(all_course, common_config.get("course_list"))
-        
-        # 开始学习
-        # 开始学习
-logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
 
-all_done = True
-for course in course_task:
-    course_done = process_course(chaoxing, course, common_config)
-    if not course_done:
-        all_done = False
+        # 开始学习
+        logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
 
-if all_done:
-    logger.info("所有课程学习任务已完成")
-    notification.send("chaoxing : 所有课程学习任务已完成")
-else:
-    logger.info("本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
-    notification.send("chaoxing : 本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
-        
+        all_done = True
+        for course in course_task:
+            course_done = process_course(chaoxing, course, common_config)
+            if not course_done:
+                all_done = False
+
+        if all_done:
+            logger.info("所有课程学习任务已完成")
+            notification.send("chaoxing : 所有课程学习任务已完成")
+        else:
+            logger.info("本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
+            notification.send("chaoxing : 本轮已完成当前可开放章节，后续章节等待开放，下次定时继续")
+
     except SystemExit as e:
         if e.code != 0:
             logger.error(f"错误: 程序异常退出, 返回码: {e.code}")
@@ -618,7 +623,8 @@ else:
         logger.error(f"错误: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
         try:
-            notification.send(f"chaoxing : 出现错误 {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            if notification:
+                notification.send(f"chaoxing : 出现错误 {type(e).__name__}: {e}\n{traceback.format_exc()}")
         except Exception:
             pass  # 如果通知发送失败，忽略异常
         raise e
